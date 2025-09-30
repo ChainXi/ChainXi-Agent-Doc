@@ -1,0 +1,131 @@
+name: daily-copilot-pr
+
+on:
+  schedule:
+    - cron: '10 2 * * *' # 每日 UTC 02:10 运行（北京时间 10:10）按需调整
+  workflow_dispatch: {}
+
+# 允许写入代码与创建 PR
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: daily-copilot-pr
+  cancel-in-progress: false
+
+jobs:
+  gen-pr:
+    name: Generate Daily Copilot PR
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Shanghai
+      # 如果你创建了自定义 Copilot 个人 token，可在仓库 Secrets 添加 COPILOT_TOKEN；
+      # 若没有，将使用 GitHub Actions 默认的 GITHUB_TOKEN（某些组织策略下 gh copilot 可能需要额外授权）。
+      GH_TOKEN: ${{ secrets.COPILOT_TOKEN || secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure GitHub CLI (gh) exists
+        run: |
+          if ! command -v gh; then
+            echo "gh not found, installing...";
+            sudo apt-get update -y && sudo apt-get install -y gh;
+          fi
+          gh --version
+
+      - name: Install / Upgrade Copilot extension
+        run: |
+          set -e
+          gh extension install github/gh-copilot || gh extension upgrade github/gh-copilot
+          gh copilot --help | head -n 5 || true
+
+      - name: Prepare branch variables
+        id: vars
+        run: |
+          DATE=$(date +'%Y-%m-%d')
+          SAFE_DATE=$(echo "$DATE" | tr -cd '0-9-')
+          BRANCH="copilot-auto/${SAFE_DATE}"
+          echo "date=${SAFE_DATE}" >> $GITHUB_OUTPUT
+          echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
+
+      - name: Skip if PR already exists
+        id: precheck
+        run: |
+          if gh pr list --search "head:${{ steps.vars.outputs.branch }}" --state open --json number --limit 1 | grep -q '"number"'; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Stop (already open)
+        if: steps.precheck.outputs.exists == 'true'
+        run: echo "已有同名开放 PR，终止本次执行。"
+
+      - name: Create branch
+        if: steps.precheck.outputs.exists == 'false'
+        run: git checkout -b "${{ steps.vars.outputs.branch }}"
+
+      - name: Generate content using Copilot
+        if: steps.precheck.outputs.exists == 'false'
+        run: |
+          set -e
+          mkdir -p docs/auto
+          FILE="docs/auto/copilot-${{ steps.vars.outputs.date }}.md"
+          echo "<!-- 由 GitHub Copilot 自动生成，日期 ${{ steps.vars.outputs.date }} -->" > "$FILE"
+          echo "" >> "$FILE"
+          PROMPT=$'为本项目文档新增一节: 今日自动更新摘录。要求: 1) 全中文 2) 一个###级标题 3) 一个不少于5条的要点列表，聚焦前端/文档优化/构建性能/可维护性 4) 一小段总结段落 5) 不要包含宣传或隐私内容。'
+          # 尝试使用 suggest（快速）
+          if gh copilot suggest -t "$PROMPT" >> "$FILE" 2>/dev/null; then
+            echo "" >> "$FILE"
+          else
+            # 回退：使用聊天接口（有时 suggest 在非交互失败）
+            echo "(Copilot suggest 失败，尝试 chat 回退)" >> "$FILE"
+            gh copilot chat --model "gpt-4o-mini" -m "$PROMPT" >> "$FILE" 2>/dev/null || {
+              echo "### 自动更新" >> "$FILE";
+              echo "" >> "$FILE";
+              echo "- Copilot 生成内容暂不可用，使用占位文本" >> "$FILE";
+              echo "- 请手动补充" >> "$FILE";
+            }
+          fi
+          sed -i '1,5s/\r$//' "$FILE" || true
+          echo "--- 生成文件预览 ---"; head -n 40 "$FILE"; echo "------------------"
+
+      - name: Update auto index
+        if: steps.precheck.outputs.exists == 'false'
+        run: |
+          INDEX="docs/auto/README.md"
+          echo "## 自动内容索引" > "$INDEX"
+          echo "" >> "$INDEX"
+          for f in $(ls -1 docs/auto | grep '^copilot-' | sort); do
+            echo "- [${f%.*}](./$f)" >> "$INDEX"
+          done
+
+      - name: Commit changes
+        if: steps.precheck.outputs.exists == 'false'
+        run: |
+          git add docs/auto
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: Copilot 自动生成内容 ${{ steps.vars.outputs.date }}" || echo "No changes to commit"
+
+      - name: Push branch
+        if: steps.precheck.outputs.exists == 'false'
+        run: git push origin "${{ steps.vars.outputs.branch }}"
+
+      - name: Create PR
+        if: steps.precheck.outputs.exists == 'false'
+        run: |
+          gh pr create \
+            --title "chore: Copilot 自动生成内容 ${{ steps.vars.outputs.date }}" \
+            --body $'本 PR 由 GitHub Actions + Copilot 自动创建。\n\n- 日期: ${{ steps.vars.outputs.date }}\n- 分支: ${{ steps.vars.outputs.branch }}\n\n请审核自动生成的文档内容。' \
+            --base main \
+            --head "${{ steps.vars.outputs.branch }}" || echo "PR 创建可能失败，请检查日志"
+
+      - name: Append PR link to summary (if created)
+        if: steps.precheck.outputs.exists == 'false'
+        run: |
+          URL=$(gh pr list --search "head:${{ steps.vars.outputs.branch }}" --state open --json url --limit 1 | jq -r '.[0].url')
+          echo "pull_request_url=${URL}" >> $GITHUB_OUTPUT
+          echo "PR URL: ${URL}"
