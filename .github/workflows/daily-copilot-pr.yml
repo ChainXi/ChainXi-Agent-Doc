@@ -3,7 +3,27 @@ name: daily-copilot-pr
 on:
   schedule:
     - cron: '10 2 * * *' # 每日 UTC 02:10 运行（北京时间 10:10）按需调整
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      topic:
+        description: '（可选）指定今日自由创作主题，不填则随机'
+        required: false
+        type: string
+      creative_level:
+        description: '创作发散程度：conservative | balanced | aggressive'
+        required: false
+        default: 'balanced'
+        type: choice
+        options:
+          - conservative
+          - balanced
+          - aggressive
+      force_new_pr:
+        description: '即使已有同日 PR 也强制新建（会使用精确时间戳分支）'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['true','false']
 
 # 允许写入代码与创建 PR
 permissions:
@@ -23,6 +43,21 @@ jobs:
       # 如果你创建了自定义 Copilot 个人 token，可在仓库 Secrets 添加 COPILOT_TOKEN；
       # 若没有，将使用 GitHub Actions 默认的 GITHUB_TOKEN（某些组织策略下 gh copilot 可能需要额外授权）。
       GH_TOKEN: ${{ secrets.COPILOT_TOKEN || secrets.GITHUB_TOKEN }}
+      # 创作模式配置（可在仓库/组织级别 secret 覆盖）：
+      DEFAULT_TOPICS: |
+        前端性能优化
+        文档信息架构
+        构建速度提升策略
+        可维护性重构建议
+        DX（开发者体验）改进
+        自动化与质量保障
+        SEO 与可访问性
+        组件库设计原则
+      MAX_MULTI_FILES: 2
+      # conservative: 更稳健/较少改动, balanced: 默认, aggressive: 更自由生成（可能长文本）
+      CREATIVE_LEVEL: ${{ github.event.inputs.creative_level || 'balanced' }}
+      INPUT_TOPIC: ${{ github.event.inputs.topic || '' }}
+      FORCE_NEW_PR: ${{ github.event.inputs.force_new_pr || 'false' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -44,11 +79,49 @@ jobs:
       - name: Prepare branch variables
         id: vars
         run: |
+          # 基础日期（用于 PR 标题 / 文件命名）
           DATE=$(date +'%Y-%m-%d')
           SAFE_DATE=$(echo "$DATE" | tr -cd '0-9-')
-          BRANCH="copilot-auto/${SAFE_DATE}"
+          # 精确到秒的时间戳（避免同一天多次触发或手动重跑产生分支命名冲突）
+          TS=$(date +'%Y-%m-%d-%H%M%S')
+          SAFE_TS=$(echo "$TS" | tr -cd '0-9-')
+          # 如果不是强制新 PR，优先尝试使用基于日期的较稳定分支（避免重复 PR）；强制模式使用时间戳分支
+          if [ "${FORCE_NEW_PR}" = 'false' ]; then
+            BRANCH="copilot-auto/${SAFE_DATE}"
+          else
+            BRANCH="copilot-auto/${SAFE_TS}"
+          fi
           echo "date=${SAFE_DATE}" >> $GITHUB_OUTPUT
+            
+          # 额外输出 timestamp 供后续需要（暂未使用，可扩展）
+          echo "timestamp=${SAFE_TS}" >> $GITHUB_OUTPUT
           echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
+          echo "force_new=${FORCE_NEW_PR}" >> $GITHUB_OUTPUT
+
+      - name: Resolve topic & creative params
+        id: topic
+        run: |
+          set -e
+          # 若手动输入主题，直接使用；否则随机选一个默认主题
+            if [ -n "${INPUT_TOPIC}" ]; then
+              FINAL_TOPIC="${INPUT_TOPIC}"
+            else
+              mapfile -t TOPIC_ARR <<EOF
+          ${DEFAULT_TOPICS}
+          EOF
+              COUNT=${#TOPIC_ARR[@]}
+              IDX=$((RANDOM % COUNT))
+              FINAL_TOPIC=${TOPIC_ARR[$IDX]}
+            fi
+          echo "final_topic=${FINAL_TOPIC}" >> $GITHUB_OUTPUT
+          echo "Creative level: ${CREATIVE_LEVEL}";
+          echo "Topic: ${FINAL_TOPIC}";
+          case "${CREATIVE_LEVEL}" in
+            conservative) TEMP_PROMPT_STYLE="语言简洁，聚焦3~5条高价值建议，避免夸张";;
+            aggressive) TEMP_PROMPT_STYLE="可发散、可提出前卫或有争议的探索方向（仍需保持专业与安全），结构更丰富";;
+            *) TEMP_PROMPT_STYLE="平衡专业性与可读性";;
+          esac
+          echo "style_hint=${TEMP_PROMPT_STYLE}" >> $GITHUB_OUTPUT
 
       - name: Skip if PR already exists
         id: precheck
@@ -59,41 +132,60 @@ jobs:
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Stop (already open)
-        if: steps.precheck.outputs.exists == 'true'
-        run: echo "已有同名开放 PR，终止本次执行。"
+      - name: Stop (already open) - only when not force
+        if: steps.precheck.outputs.exists == 'true' && steps.vars.outputs.force_new == 'false'
+        run: echo "已有同名开放 PR（且未要求 force_new），终止本次执行。"
 
       - name: Create branch
-        if: steps.precheck.outputs.exists == 'false'
+        if: steps.precheck.outputs.exists == 'false' || steps.vars.outputs.force_new == 'true'
         run: git checkout -b "${{ steps.vars.outputs.branch }}"
 
-      - name: Generate content using Copilot
-        if: steps.precheck.outputs.exists == 'false'
+      - name: Generate creative content (multi-file possible)
+        if: steps.precheck.outputs.exists == 'false' || steps.vars.outputs.force_new == 'true'
         run: |
           set -e
           mkdir -p docs/auto
-          FILE="docs/auto/copilot-${{ steps.vars.outputs.date }}.md"
-          echo "<!-- 由 GitHub Copilot 自动生成，日期 ${{ steps.vars.outputs.date }} -->" > "$FILE"
-          echo "" >> "$FILE"
-          PROMPT=$'为本项目文档新增一节: 今日自动更新摘录。要求: 1) 全中文 2) 一个###级标题 3) 一个不少于5条的要点列表，聚焦前端/文档优化/构建性能/可维护性 4) 一小段总结段落 5) 不要包含宣传或隐私内容。'
-          # 尝试使用 suggest（快速）
-          if gh copilot suggest -t "$PROMPT" >> "$FILE" 2>/dev/null; then
+          BASE_DATE='${{ steps.vars.outputs.date }}'
+          TOPIC='${{ steps.topic.outputs.final_topic }}'
+          STYLE='${{ steps.topic.outputs.style_hint }}'
+          LEVEL='${CREATIVE_LEVEL}'
+          GEN_COUNT=${MAX_MULTI_FILES}
+          i=1
+          while [ $i -le $GEN_COUNT ]; do
+            FILE="docs/auto/copilot-${BASE_DATE}-${i}.md"
+            if [ -f "$FILE" ]; then
+              i=$((i+1)); continue; fi
+            echo "<!-- 自动生成: 日期 ${{ steps.vars.outputs.date }}  序号 $i  主题: $TOPIC  模式:${LEVEL} -->" > "$FILE"
             echo "" >> "$FILE"
-          else
-            # 回退：使用聊天接口（有时 suggest 在非交互失败）
-            echo "(Copilot suggest 失败，尝试 chat 回退)" >> "$FILE"
-            gh copilot chat --model "gpt-4o-mini" -m "$PROMPT" >> "$FILE" 2>/dev/null || {
-              echo "### 自动更新" >> "$FILE";
-              echo "" >> "$FILE";
-              echo "- Copilot 生成内容暂不可用，使用占位文本" >> "$FILE";
-              echo "- 请手动补充" >> "$FILE";
-            }
-          fi
-          sed -i '1,5s/\r$//' "$FILE" || true
-          echo "--- 生成文件预览 ---"; head -n 40 "$FILE"; echo "------------------"
+            PROMPT=$'请基于主题「'"${TOPIC}"'」为本仓库（前端/文档）生成一段今日创作内容。\n要求：\n1) 语言：中文\n2) 结构：一个三级标题；一个包含不少于5条的要点列表（聚焦：前端工程、文档优化、构建性能、可维护性、自动化）；随后一个总结段落。\n3) 风格提示：'"${STYLE}"'\n4) 不得包含：隐私、机密、明显商业广告、无依据的安全指令。\n5) 若提出改进建议，可引用代码片段（简短，不超过10行）。'
+            # 优先快速 suggest
+            if gh copilot suggest -t "$PROMPT" >> "$FILE" 2>/dev/null; then
+              echo "" >> "$FILE"
+            else
+              echo "(suggest 失败，尝试 chat 回退)" >> "$FILE"
+              gh copilot chat --model "gpt-4o-mini" -m "$PROMPT" >> "$FILE" 2>/dev/null || {
+                echo "### 自动创作占位 (失败)" >> "$FILE";
+                echo "- Copilot 暂不可用" >> "$FILE";
+              }
+            fi
+            sed -i '1,5s/\r$//' "$FILE" || true
+            echo "[预览] $FILE"; head -n 25 "$FILE" || true
+            i=$((i+1))
+          done
+          # 合并当日多个文件为一个索引聚合（可选）
+          AGG="docs/auto/copilot-${BASE_DATE}.md"
+          echo "<!-- 汇总文件（聚合多文件标题） -->" > "$AGG"
+          echo "## 当日自动创作索引 (${BASE_DATE})" >> "$AGG"
+          echo "" >> "$AGG"
+          for f in docs/auto/copilot-${BASE_DATE}-*.md; do
+            [ -f "$f" ] || continue
+            TITLE=$(grep -m1 '^###' "$f" | sed 's/^### *//')
+            [ -n "$TITLE" ] || TITLE="文件 $(basename "$f")"
+            echo "- [$TITLE]($(basename "$f"))" >> "$AGG"
+          done
 
       - name: Update auto index
-        if: steps.precheck.outputs.exists == 'false'
+        if: steps.precheck.outputs.exists == 'false' || steps.vars.outputs.force_new == 'true'
         run: |
           INDEX="docs/auto/README.md"
           echo "## 自动内容索引" > "$INDEX"
@@ -101,9 +193,16 @@ jobs:
           for f in $(ls -1 docs/auto | grep '^copilot-' | sort); do
             echo "- [${f%.*}](./$f)" >> "$INDEX"
           done
+          echo "" >> "$INDEX"
+          echo "> 注：索引文件由 CI 自动更新，手动修改可能会被覆盖" >> "$INDEX"
+
+      - name: "Trim old generated files (older than 30 days)"
+        if: steps.precheck.outputs.exists == 'false' || steps.vars.outputs.force_new == 'true'
+        run: |
+          find docs/auto -type f -name 'copilot-*.md' -mtime +30 -print -delete 2>/dev/null || true
 
       - name: Commit changes
-        if: steps.precheck.outputs.exists == 'false'
+        if: steps.precheck.outputs.exists == 'false' || steps.vars.outputs.force_new == 'true'
         run: |
           git add docs/auto
           git config user.name "github-actions[bot]"
@@ -111,21 +210,57 @@ jobs:
           git commit -m "chore: Copilot 自动生成内容 ${{ steps.vars.outputs.date }}" || echo "No changes to commit"
 
       - name: Push branch
-        if: steps.precheck.outputs.exists == 'false'
+        if: steps.precheck.outputs.exists == 'false' || steps.vars.outputs.force_new == 'true'
         run: git push origin "${{ steps.vars.outputs.branch }}"
 
-      - name: Create PR
-        if: steps.precheck.outputs.exists == 'false'
+      - name: Create or update PR
+        if: steps.precheck.outputs.exists == 'false' || steps.vars.outputs.force_new == 'true'
         run: |
-          gh pr create \
-            --title "chore: Copilot 自动生成内容 ${{ steps.vars.outputs.date }}" \
-            --body $'本 PR 由 GitHub Actions + Copilot 自动创建。\n\n- 日期: ${{ steps.vars.outputs.date }}\n- 分支: ${{ steps.vars.outputs.branch }}\n\n请审核自动生成的文档内容。' \
-            --base main \
-            --head "${{ steps.vars.outputs.branch }}" || echo "PR 创建可能失败，请检查日志"
+          set -e
+          DATE='${{ steps.vars.outputs.date }}'
+          BRANCH_NAME='${{ steps.vars.outputs.branch }}'
+          TOPIC='${{ steps.topic.outputs.final_topic }}'
+          TITLE="chore: Copilot 自动生成内容 ${DATE}"
+          BODY="本 PR 由 GitHub Actions + Copilot 自动创建。\n\n- 日期: ${DATE}\n- 分支: ${BRANCH_NAME}\n- 主题: ${TOPIC}\n- 创作模式: ${CREATIVE_LEVEL}\n\n包含自动生成的文档/索引文件。\n\n> 注意：已尝试启用自动合并（受分支保护策略影响）。"
+          if gh pr list --search "head:${BRANCH_NAME}" --state open --json number --limit 1 | grep -q '"number"'; then
+            NUM=$(gh pr list --search "head:${BRANCH_NAME}" --state open --json number --limit 1 | jq -r '.[0].number')
+            gh pr edit "$NUM" --title "$TITLE" --body "$BODY"
+          else
+            gh pr create --title "$TITLE" --body "$BODY" --base main --head "${BRANCH_NAME}" || echo "PR 创建可能失败，请检查日志"
+            NUM=$(gh pr list --search "head:${BRANCH_NAME}" --state open --json number --limit 1 | jq -r '.[0].number') || true
+          fi
+          if [ -n "$NUM" ] && [ "$NUM" != "null" ]; then
+            gh pr edit "$NUM" --add-label "copilot-auto" || true
+          fi
 
       - name: Append PR link to summary (if created)
-        if: steps.precheck.outputs.exists == 'false'
+        if: steps.precheck.outputs.exists == 'false' || steps.vars.outputs.force_new == 'true'
         run: |
           URL=$(gh pr list --search "head:${{ steps.vars.outputs.branch }}" --state open --json url --limit 1 | jq -r '.[0].url')
           echo "pull_request_url=${URL}" >> $GITHUB_OUTPUT
           echo "PR URL: ${URL}"
+
+      - name: "Auto merge PR (enhanced)"
+        if: steps.precheck.outputs.exists == 'false' || steps.vars.outputs.force_new == 'true'
+        run: |
+          set -e
+          PR_NUMBER=$(gh pr list --search "head:${{ steps.vars.outputs.branch }}" --state open --json number --limit 1 | jq -r '.[0].number')
+          if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
+            echo "未找到 PR 编号，跳过自动合并"; exit 0; fi
+          echo "检测到 PR 编号: $PR_NUMBER"
+          # 优先尝试启用 auto merge（遵循仓库分支保护策略）
+          if gh pr merge "$PR_NUMBER" --auto --squash; then
+            echo "Auto-merge 已启用（等待检查通过后自动合并）。"; exit 0; fi
+          echo "Auto-merge 启用失败，尝试立即合并（若无保护检查将成功）。"
+          if gh pr merge "$PR_NUMBER" --squash --delete-branch --yes 2>/dev/null; then
+            echo "PR 已直接合并。"; exit 0; fi
+          echo "直接合并失败，尝试管理员方式 (--admin)。" || true
+          gh pr merge "$PR_NUMBER" --squash --delete-branch --admin --yes || echo "仍然失败，请手动处理（可能受保护分支或权限限制）。"
+
+      - name: Post-merge note
+        if: always()
+        run: |
+          echo "工作流结束。若希望更严格的安全控制，可："
+          echo "1) 为 auto 分支添加 branch protection + 必要检查"
+          echo "2) 将自动合并步骤改为仅标记标签 (如 needs-review)"
+          echo "3) 限制 CREATIVE_LEVEL=conservative"
