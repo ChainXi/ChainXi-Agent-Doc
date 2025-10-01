@@ -3,7 +3,7 @@
 layout: home
 
 hero:
-  name: "ChainXi-Admin-Doc"
+  name: "ChainXi-Agent-Doc"
   text: "开箱即用的后台脚手架"
   tagline: 轻松部署，极速上手，助力你的项目高效落地！
   image:
@@ -15,7 +15,7 @@ hero:
       link: /detail
     - theme: alt
       text: GitHub
-      link: https://github.com/ChainXi/ChainXi-Admin-Doc
+      link: https://github.com/ChainXi/ChainXi-Agent-Doc
 
 features:
   - title: 极速部署

@@ -1,4 +1,4 @@
-# ChainXi-Admin-Doc  [![visitors](https://visitor-badge.laobi.icu/badge?page_id=ChainXi/ChainXi-Admin-Doc)](https://chainxi.github.io/ChainXi-Admin-Doc/) [![Preview](https://img.shields.io/badge/Preview-在线预览-blue.svg)](https://chainxi.github.io/ChainXi-Admin-Doc/) [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](#-license)
+# ChainXi-Agent-Doc  [![visitors](https://visitor-badge.laobi.icu/badge?page_id=ChainXi/ChainXi-Agent-Doc)](https://chainxi.github.io/ChainXi-Agent-Doc/) [![Preview](https://img.shields.io/badge/Preview-在线预览-blue.svg)](https://chainxi.github.io/ChainXi-Agent-Doc/) [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](#-license)
 
 > 基于 VitePress 的文档站点，包含多语言、Algolia 搜索、Mermaid、评论系统(Giscus)、阅读数据统计、不蒜子 UV/PV、页面动效与丰富的自定义主题示例。
 
