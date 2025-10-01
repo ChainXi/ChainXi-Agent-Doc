@@ -170,7 +170,7 @@ export default defineConfig({
 
     //编辑本页
     editLink: {
-      pattern: 'https://github.com/ChainXi/ChainXi-Admin-Doc/edit/main/docs/:path', // 改成自己的仓库
+      pattern: 'https://github.com/ChainXi/ChainXi-Agent-Doc/edit/main/docs/:path', // 改成自己的仓库
       text: '在GitHub编辑本页'
     },
 
@@ -261,7 +261,7 @@ export default defineConfig({
 
     //社交链接
     socialLinks: [
-      { icon: 'github', link: 'https://github.com/ChainXi/ChainXi-Admin-Doc' }
+      { icon: 'github', link: 'https://github.com/ChainXi/ChainXi-Agent-Doc' }
     ],
 
     //手机端深浅模式文字修改

@@ -2,7 +2,7 @@
     "index_name": "doc",
     "start_urls": [
         {
-            "url": "https://chainxi.github.io/ChainXi-Admin-Doc/detail.html",
+            "url": "https://chainxi.github.io/ChainXi-Agent-Doc/detail.html",
             "selectors_key": ""
         }
     ],

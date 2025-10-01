@@ -1,6 +1,6 @@
 # 🚀 快速开始
 
-欢迎使用 ChainXi-Admin-Doc！
+欢迎使用 ChainXi-Agent-Doc！
 
 ---
 
