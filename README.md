@@ -79,6 +79,6 @@ DocSearch 爬虫使用根目录 `docsearch.json`，若部署域名 / 基础路�
 
 ## 📄 License
 
-MIT License © 2023-2025 ChainXi
+MIT License © 2023-2026 ChainXi
 
 > 如果这个项目对你有帮助，欢迎 Star ⭐ 支持！
